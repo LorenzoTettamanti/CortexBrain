@@ -1,12 +1,12 @@
 /*  TODO: this part needs an update
     *
-    * This file contains the code for the identity service  
+    * This file contains the code for the identity service
     *
-    
+
     * Functionalities:
     *   1. Creates a PacketLog structure to track incoming packets
     *   2. Tracking Parameters: SRC_IP.SRC_PORT,DST_IP,DST_PORT,PROTOCOL,HASH
-    *   3. Compute the EVENT_ID and CONNECTION_ID using a byte XOR 
+    *   3. Compute the EVENT_ID and CONNECTION_ID using a byte XOR
     *   4. Store CONNECTION_ID in a BPF LRU HASHMAP and pass EVENT_ID to the user space
 */
 
@@ -15,35 +15,33 @@
 #![no_main]
 #![allow(warnings)]
 
-//mod skbuff;
-//mod veth_trace;
 mod bindings;
 
-use bytemuck::{ Pod, Zeroable };
-use aya_ebpf::{
-    bindings::{ TC_ACT_OK, TC_ACT_SHOT },
-    helpers::{ bpf_ktime_get_ns, bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes },
-    macros::{ classifier, kprobe, map, tracepoint },
-    maps::{ LruPerCpuHashMap, PerfEventArray },
-    programs::{ ProbeContext, TcContext, TracePointContext },
-};
+use aya_ebpf::programs::sk_buff::SkBuff;
 use aya_ebpf::EbpfContext;
-//use crate::skbuff::{ sock, sock_common };
+use aya_ebpf::{
+    bindings::{iphdr, TC_ACT_OK, TC_ACT_SHOT},
+    helpers::{bpf_ktime_get_ns, bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes},
+    macros::{classifier, kprobe, map, tracepoint},
+    maps::{LruPerCpuHashMap, PerfEventArray},
+    programs::{ProbeContext, TcContext, TracePointContext},
+};
 use aya_log_ebpf::info;
-use core::{ mem, ptr };
-//use crate::skbuff::proto;
-//use crate::skbuff::{ iphdr };
-//use crate::skbuff::sk_buff;
+use bytemuck::{Pod, Zeroable};
+use core::ptr::addr_of;
+use core::{mem, ptr};
 use network_types::{
-    eth::{ EthHdr, EtherType },
-    ip::{ IpProto, Ipv4Hdr },
+    eth::{EthHdr, EtherType},
+    ip::{IpProto, Ipv4Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
-use core::ptr::addr_of;
 
 use crate::bindings::net_device;
-/* 
+use crate::bindings::sock;
+use core::ffi::c_void;
+
+/*
     * ETHERNET TYPE II FRAME:
     * Reference: https://it.wikipedia.org/wiki/Frame_Ethernet
     *
@@ -55,18 +53,18 @@ use crate::bindings::net_device;
 
 */
 
-/* 
+/*
     * Ipv4 stack reference:
     * https://en.wikipedia.org/wiki/IPv4#Header
     *
     * Original reference:
 
-   |  Time to Live |    Protocol   |         Header Checksum       |     4 bytes            12             
+   |  Time to Live |    Protocol   |         Header Checksum       |     4 bytes            12
    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-   |                       Source Address                          |     4 bytes            16             
+   |                       Source Address                          |     4 bytes            16
    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-   |                    Destination Address                        |     4 bytes            20             
-   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+    
+   |                    Destination Address                        |     4 bytes            20
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
    |                    Options                    |    Padding    |
    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
@@ -114,16 +112,12 @@ pub struct ConnArray {
 static mut EVENTS: PerfEventArray<PacketLog> = PerfEventArray::new(0);
 //TODO: ConnectionMap needs a rework after implementing issue #105
 #[map(name = "ConnectionMap")]
-pub static mut ACTIVE_CONNECTIONS: LruPerCpuHashMap<
-    u16,
-    ConnArray
-> = LruPerCpuHashMap::with_max_entries(65536, 0);
+pub static mut ACTIVE_CONNECTIONS: LruPerCpuHashMap<u16, ConnArray> =
+    LruPerCpuHashMap::with_max_entries(65536, 0);
 
 #[map(name = "ConnectionTrackerMap")]
-pub static mut CONNTRACKER: LruPerCpuHashMap<ConnArray, u8> = LruPerCpuHashMap::with_max_entries(
-    65536,
-    0
-);
+pub static mut CONNTRACKER: LruPerCpuHashMap<ConnArray, u8> =
+    LruPerCpuHashMap::with_max_entries(65536, 0);
 
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Debug)]
@@ -132,6 +126,7 @@ struct VethLog {
     state: u64, //state var type: long unsigned int
     dev_addr: [u32; 8],
     event_type: u8, //i choose 1 for veth creation or 2 for veth destruction
+    netns: u64,
 }
 
 #[map(name = "veth_identity_map")]
@@ -164,16 +159,6 @@ const AF_INET6: u16 = 10; //ipv6
 const IPPROTO_UDP: u8 = 17;
 const IPPROTO_TCP: u8 = 6;
 
-/* constants */
-//FIXME: this will be deprecated after solving issue #105
-const HOST_NETNS_INUM: u32 = 4026531993;
-const KUBE_POD_CIDR: u32 = 0x0af40000; // 10.244.0.0/16
-/* Helper Functions */
-#[inline]
-unsafe fn is_kube_internal(ip: u32) -> bool {
-    (ip & 0xffff0000) == KUBE_POD_CIDR
-}
-
 #[kprobe]
 pub fn veth_creation_trace(ctx: ProbeContext) -> u32 {
     match try_veth_creation_trace(ctx) {
@@ -189,7 +174,6 @@ pub fn veth_deletion_trace(ctx: ProbeContext) -> u32 {
     }
 }
 
-
 pub fn try_veth_creation_trace(ctx: ProbeContext) -> Result<u32, i64> {
     let net_device_pointer: *const net_device = ctx.arg(0).ok_or(1i64)?;
 
@@ -199,22 +183,26 @@ pub fn try_veth_creation_trace(ctx: ProbeContext) -> Result<u32, i64> {
     }
 
     let name_field_offset = 304; // reading the name field offset
-    //pahole commands:
-    //syntax pahole -C <struct name>
-    // pahole -C net_device | grep name
+                                 //pahole commands:
+                                 //syntax pahole -C <struct name>
+                                 // pahole -C net_device | grep name
 
     let dev_addr_offset = 1080;
     let state_offset = 168;
+    let nd_net_offset = 280;
 
     let name_pointer = unsafe { (net_device_pointer as *const u8).add(name_field_offset) };
     let dev_addr_pointer = unsafe { (net_device_pointer as *const u8).add(dev_addr_offset) };
     let state_pointer = unsafe { (net_device_pointer as *const u8).add(state_offset) };
+    let nd_net_pointer: *const u8 = unsafe { (net_device_pointer as *const u8).add(nd_net_offset) };
 
     let mut name_buf = [0u8; 16];
     let mut dev_addr_buf = [0u32; 8];
 
     let name_array_ptr = name_pointer as *const [u8; 16];
     let dev_addr_ptr_array = dev_addr_pointer as *const [u32; 8];
+
+    let net_ns: *const u64 = nd_net_pointer as *const u64;
 
     let name_array = unsafe {
         match bpf_probe_read_kernel(name_array_ptr) {
@@ -225,10 +213,10 @@ pub fn try_veth_creation_trace(ctx: ProbeContext) -> Result<u32, i64> {
         }
     };
 
-    let state=unsafe {
+    let state = unsafe {
         match bpf_probe_read_kernel(state_pointer) {
-            Ok(s)=>s,
-            Err(ret)=>{
+            Ok(s) => s,
+            Err(ret) => {
                 return Err(ret);
             }
         }
@@ -243,6 +231,21 @@ pub fn try_veth_creation_trace(ctx: ProbeContext) -> Result<u32, i64> {
         }
     };
 
+    // NOTE: this is a kernel space identifier
+    // * Example of namespace identifier:
+    // * Kernel space:
+    // *    18446638667251234688
+    // * User space:
+    // *    net:[4026533429]
+    // TODO: a user space <=> kernel space association needs to be created
+
+    let net_ns_addr = unsafe {
+        match bpf_probe_read_kernel(net_ns) {
+            Ok(s) => s,
+            Err(ret) => return Err(ret),
+        }
+    };
+
     name_buf.copy_from_slice(&name_array);
     dev_addr_buf.copy_from_slice(&dev_addr_array);
 
@@ -250,7 +253,8 @@ pub fn try_veth_creation_trace(ctx: ProbeContext) -> Result<u32, i64> {
         name: name_buf,
         state: state.into(),
         dev_addr: dev_addr_buf,
-        event_type: 1
+        event_type: 1,
+        netns: net_ns_addr,
     };
 
     //send the data to the userspace
@@ -270,22 +274,26 @@ pub fn try_veth_deletion_trace(ctx: ProbeContext) -> Result<u32, i64> {
     }
 
     let name_field_offset = 304; // reading the name field offset
-    //pahole commands:
-    //syntax pahole -C <struct name>
-    // pahole -C net_device | grep name
+                                 //pahole commands:
+                                 //syntax pahole -C <struct name>
+                                 // pahole -C net_device | grep name
 
     let dev_addr_offset = 1080;
     let state_offset = 168;
+    let nd_net_offset = 280;
 
     let name_pointer = unsafe { (net_device_pointer as *const u8).add(name_field_offset) };
     let dev_addr_pointer = unsafe { (net_device_pointer as *const u8).add(dev_addr_offset) };
     let state_pointer = unsafe { (net_device_pointer as *const u8).add(state_offset) };
+    let nd_net_pointer: *const u8 = unsafe { (net_device_pointer as *const u8).add(nd_net_offset) };
 
     let mut name_buf = [0u8; 16];
     let mut dev_addr_buf = [0u32; 8];
 
     let name_array_ptr = name_pointer as *const [u8; 16];
     let dev_addr_ptr_array = dev_addr_pointer as *const [u32; 8];
+
+    let net_ns: *const u64 = nd_net_pointer as *const u64;
 
     let name_array = unsafe {
         match bpf_probe_read_kernel(name_array_ptr) {
@@ -296,10 +304,10 @@ pub fn try_veth_deletion_trace(ctx: ProbeContext) -> Result<u32, i64> {
         }
     };
 
-    let state=unsafe {
+    let state = unsafe {
         match bpf_probe_read_kernel(state_pointer) {
-            Ok(s)=>s,
-            Err(ret)=>{
+            Ok(s) => s,
+            Err(ret) => {
                 return Err(ret);
             }
         }
@@ -314,6 +322,13 @@ pub fn try_veth_deletion_trace(ctx: ProbeContext) -> Result<u32, i64> {
         }
     };
 
+    let net_ns_addr = unsafe {
+        match bpf_probe_read_kernel(net_ns) {
+            Ok(s) => s,
+            Err(ret) => return Err(ret),
+        }
+    };
+
     name_buf.copy_from_slice(&name_array);
     dev_addr_buf.copy_from_slice(&dev_addr_array);
 
@@ -321,7 +336,8 @@ pub fn try_veth_deletion_trace(ctx: ProbeContext) -> Result<u32, i64> {
         name: name_buf,
         state: state.into(),
         dev_addr: dev_addr_buf,
-        event_type: 2
+        event_type: 2,
+        netns: net_ns_addr.into(),
     };
 
     //send the data to the userspace
@@ -331,9 +347,6 @@ pub fn try_veth_deletion_trace(ctx: ProbeContext) -> Result<u32, i64> {
 
     Ok(0)
 }
-
-
-
 
 #[classifier]
 pub fn identity_classifier(ctx: TcContext) -> i32 {
@@ -353,22 +366,19 @@ fn try_identity_classifier(ctx: TcContext) -> Result<(), i64> {
 
     //read if the packets has Options
     let first_ipv4_byte = u8::from_be(ctx.load::<u8>(ETH_STACK_BYTES).map_err(|_| 1)?);
-    let ihl = (first_ipv4_byte &
-        0x0f) as usize; /* 0x0F=00001111 &=AND bit a bit operator to extract the last 4 bit*/
+    let ihl = (first_ipv4_byte & 0x0f) as usize; /* 0x0F=00001111 &=AND bit a bit operator to extract the last 4 bit*/
     let ip_header_len = ihl * 4; //returns the header lenght in bytes
 
     //get the source ip,destination ip and connection id
     let src_ip = u32::from_be(ctx.load::<u32>(SRC_T0TAL_BYTES_OFFSET).map_err(|_| 1)?); // ETH+SOURCE_ADDRESS
     let src_port = u16::from_be(
-        ctx
-            .load::<u16>(ETH_STACK_BYTES + ip_header_len + SRC_PORT_OFFSET_FROM_IP_HEADER)
-            .map_err(|_| 1)?
+        ctx.load::<u16>(ETH_STACK_BYTES + ip_header_len + SRC_PORT_OFFSET_FROM_IP_HEADER)
+            .map_err(|_| 1)?,
     ); //14+IHL-Lenght+0
     let dst_ip = u32::from_be(ctx.load::<u32>(DST_T0TAL_BYTES_OFFSET).map_err(|_| 1)?); // ETH+ DESTINATION_ADDRESS
     let dst_port = u16::from_be(
-        ctx
-            .load::<u16>(ETH_STACK_BYTES + ip_header_len + DST_PORT_OFFSET_FROM_IP_HEADER)
-            .map_err(|_| 1)?
+        ctx.load::<u16>(ETH_STACK_BYTES + ip_header_len + DST_PORT_OFFSET_FROM_IP_HEADER)
+            .map_err(|_| 1)?,
     ); //14+IHL-Lenght+0
     let proto = u8::from_be(ctx.load::<u8>(PROTOCOL_T0TAL_BYTES_OFFSET).map_err(|_| 1)?);
 
@@ -389,19 +399,15 @@ fn try_identity_classifier(ctx: TcContext) -> Result<(), i64> {
     };
 
     // XOR to generate the hash id for the given connection
-    let event_id = (src_ip ^
-        dst_ip ^
-        (src_port as u32) ^
-        (dst_port as u32) ^
-        (proto as u32)) as u16; //generate one for every event using a 'byte XOR' operation
+    let event_id =
+        (src_ip ^ dst_ip ^ (src_port as u32) ^ (dst_port as u32) ^ (proto as u32)) as u16; //generate one for every event using a 'byte XOR' operation
 
     //let connection_id = (src_ip ^ dst_ip ^(proto as u32)) as u16; //added host_id to track the host to count every all the different connections
 
-    if
-        src_ip == ip_to_block ||
-        src_ip == ip_to_block_2 ||
-        src_ip == ip_to_block_3 ||
-        src_ip == ip_to_block_4
+    if src_ip == ip_to_block
+        || src_ip == ip_to_block_2
+        || src_ip == ip_to_block_3
+        || src_ip == ip_to_block_4
     {
         return Ok(());
     } else {
@@ -420,7 +426,7 @@ fn try_identity_classifier(ctx: TcContext) -> Result<(), i64> {
         //};
         unsafe {
             EVENTS.output(&ctx, &log, 0); //output to userspace
-            //TODO: add more parameters to better identify the active connection (maybe timestamp?)
+                                          //TODO: add more parameters to better identify the active connection (maybe timestamp?)
             ACTIVE_CONNECTIONS.insert(&event_id, &key, 0);
         }
     }
@@ -434,6 +440,5 @@ fn try_identity_classifier(ctx: TcContext) -> Result<(), i64> {
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {
-    }
+    loop {}
 }
