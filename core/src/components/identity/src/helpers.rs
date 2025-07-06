@@ -30,7 +30,6 @@ use tokio::{fs, signal};
  * decleare bpf path env variable
  */
 const BPF_PATH: &str = "BPF_PATH";
-const IFACE: &str = "IFACE";
 
 /*
  * TryFrom Trait implementation for IpProtocols enum
@@ -115,6 +114,7 @@ pub async fn display_veth_events<T: BorrowMut<MapData>>(
                             let dev_addr_bytes = vethlog.dev_addr.to_vec();
                             let name = std::str::from_utf8(&name_bytes);
                             let state = vethlog.state;
+                            let netns = vethlog.netns;
 
                             let dev_addr = dev_addr_bytes;
                             let mut event_type = String::new();
@@ -130,11 +130,12 @@ pub async fn display_veth_events<T: BorrowMut<MapData>>(
                             match name {
                                 Ok(veth_name) => {
                                     info!(
-                                        "Triggered action: register_netdevice event_type:{:?} Manipulated veth: {:?} state:{:?} dev_addr:{:?}",
+                                        "Triggered action: register_netdevice event_type:{:?} Manipulated veth: {:?} state:{:?} dev_addr:{:?} netns:{:?}",
                                         event_type,
                                         veth_name.trim_end_matches("\0").to_string(),
                                         state,
-                                        dev_addr
+                                        dev_addr,
+                                        netns
                                     );
                                 }
                                 Err(_) => info!("Unknown name or corrupted field"),

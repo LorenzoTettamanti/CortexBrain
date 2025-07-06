@@ -34,4 +34,5 @@ pub struct VethLog {
     pub state: u64,
     pub dev_addr: [u32;8],
     pub event_type: u8,
+    pub netns: u64,
 }
