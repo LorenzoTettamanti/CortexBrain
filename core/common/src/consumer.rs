@@ -19,11 +19,17 @@ use crate::buffer_type::{
     TimeStampMetrics,
 };
 use crate::constants::DEFAULT_MAP_READING_TIME;
+#[cfg(all(feature = "network-structs", feature = "monitoring-structs"))]
+use crate::constants::{CONNECTION_DIRECTION_EGRESS, CONNECTION_DIRECTION_INGRESS};
 #[cfg(feature = "monitoring-structs")]
 use crate::metadata::Metadata;
 #[cfg(feature = "monitoring-structs")]
 use crate::otel_metrics::Metrics;
 use crate::service_cache::ServiceCache;
+#[cfg(feature = "network-structs")]
+use crate::service_graph::ServiceGraphObserver;
+#[cfg(all(feature = "network-structs", feature = "monitoring-structs"))]
+use crate::service_graph::{ServiceGraphEvent, ServiceNode};
 use bytes::BytesMut;
 #[cfg(feature = "network-structs")]
 use std::collections::HashMap;
@@ -107,6 +113,63 @@ impl IdentityFlowTracker {
     }
 }
 
+#[cfg(all(feature = "network-structs", feature = "monitoring-structs"))]
+async fn build_service_graph_event(
+    connection: &TcpPacketRegistry,
+    metadata: &Metadata,
+    cache: Option<&Arc<RwLock<ServiceCache>>>,
+) -> ServiceGraphEvent {
+    use crate::buffer_type::reverse_be_addr;
+
+    let source_ip = reverse_be_addr(connection.src_ip);
+    let destination_ip = reverse_be_addr(connection.dst_ip);
+    let mut source = ServiceNode::new(source_ip);
+    let mut destination = ServiceNode::new(destination_ip);
+
+    if let Some(cache) = cache {
+        let cache = cache.read().await;
+        if let Some(service) = cache.lookup_ip(&source_ip) {
+            source.service = service.first().cloned();
+            source.namespace = service.get(1).cloned();
+        }
+        if let Some(service) = cache.lookup_ip(&destination_ip) {
+            destination.service = service.first().cloned();
+            destination.namespace = service.get(1).cloned();
+        }
+    }
+
+    let local_service = metadata
+        .pod_name
+        .clone()
+        .or_else(|| metadata.container_name.clone());
+    let local_namespace = metadata.namespace.clone();
+
+    match connection.direction {
+        CONNECTION_DIRECTION_EGRESS => {
+            if local_service.is_some() {
+                source.service = local_service;
+            }
+            if local_namespace.is_some() {
+                source.namespace = local_namespace;
+            }
+        }
+        CONNECTION_DIRECTION_INGRESS => {
+            if local_service.is_some() {
+                destination.service = local_service;
+            }
+            if local_namespace.is_some() {
+                destination.namespace = local_namespace;
+            }
+        }
+        _ => {}
+    }
+
+    ServiceGraphEvent {
+        source,
+        destination,
+    }
+}
+
 /// Discriminator for perf-buffer event types consumed by the collector.
 ///
 /// Each variant maps to an eBPF program output struct and a dedicated
@@ -118,6 +181,7 @@ pub enum Consumer {
     #[cfg(feature = "network-structs")]
     TcpPacketRegistry {
         tracker: Arc<Mutex<IdentityFlowTracker>>,
+        graph_observer: Option<Arc<dyn ServiceGraphObserver>>,
     },
     #[cfg(feature = "network-structs")]
     VethLog,
@@ -200,6 +264,7 @@ impl Consumer {
         tot_events: i32,
         offset: i32,
         tracker: Arc<Mutex<IdentityFlowTracker>>,
+        graph_observer: Option<Arc<dyn ServiceGraphObserver>>,
         #[cfg(feature = "monitoring-structs")] exporter: &str,
         #[cfg(feature = "monitoring-structs")] metrics: Arc<Metrics>,
         #[cfg(feature = "monitoring-structs")] cache: Option<Arc<RwLock<ServiceCache>>>,
@@ -258,20 +323,29 @@ impl Consumer {
                         .map(|mut tracker| tracker.observe(&pl))
                         .unwrap_or(false);
 
-                    if exporter == "otlp" && is_new {
+                    if exporter == "otlp" && (is_new || graph_observer.is_some()) {
                         let mut metadata =
                             Metadata::from_ebpf(Some(pl.pid), Some(pl.cgroup_id), &pl.command);
                         if let Some(cache) = &cache {
                             metadata.enrich(cache).await;
                         }
 
-                        metrics.record_identity_connection(pl.direction, &metadata);
+                        if is_new {
+                            metrics.record_identity_connection(pl.direction, &metadata);
+                        }
+
+                        if let Some(observer) = &graph_observer {
+                            let event =
+                                build_service_graph_event(&pl, &metadata, cache.as_ref()).await;
+                            observer.observe(&event);
+                        }
                     }
                 }
 
                 #[cfg(not(feature = "monitoring-structs"))]
                 {
                     let _ = &tracker;
+                    let _ = &graph_observer;
                 }
             }
         }
@@ -893,13 +967,17 @@ pub async fn read_perf_buffer<T: std::borrow::BorrowMut<aya::maps::MapData>>(
                                 Consumer::read_packet_log(&mut buffers, tot_events, offset).await
                             }
                             #[cfg(feature = "network-structs")]
-                            Consumer::TcpPacketRegistry { ref tracker } => {
+                            Consumer::TcpPacketRegistry {
+                                ref tracker,
+                                ref graph_observer,
+                            } => {
                                 #[cfg(feature = "monitoring-structs")]
                                 Consumer::read_tcp_registry_log(
                                     &mut buffers,
                                     tot_events,
                                     offset,
                                     tracker.clone(),
+                                    graph_observer.clone(),
                                     "otlp",
                                     metrics
                                         .clone()
@@ -913,6 +991,7 @@ pub async fn read_perf_buffer<T: std::borrow::BorrowMut<aya::maps::MapData>>(
                                     tot_events,
                                     offset,
                                     tracker.clone(),
+                                    graph_observer.clone(),
                                 )
                                 .await;
                             }

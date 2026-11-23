@@ -8,8 +8,10 @@
  */
 
 mod helpers;
+mod service_graph;
 
 use crate::helpers::{attach_and_register, get_veth_channels};
+use crate::service_graph::{IdentityServiceGraph, eviction_interval};
 use aya::{
     Ebpf,
     maps::{Map, MapData},
@@ -28,6 +30,7 @@ use cortexbrain_common::{
     otel_metrics::Metrics,
     program_handlers::load_program,
     service_cache::ServiceCache,
+    service_graph::ServiceGraphObserver,
 };
 use std::future::Future;
 use std::{
@@ -372,6 +375,7 @@ fn start_event_consumers<T, H>(
     veth: T,
     network: T,
     tcp: T,
+    graph_observer: Option<Arc<dyn ServiceGraphObserver>>,
     mut start: impl FnMut(T, BufferSize, Consumer) -> H,
 ) -> (H, H, H) {
     let flow_tracker = Arc::new(Mutex::new(IdentityFlowTracker::new(Duration::from_secs(
@@ -390,6 +394,7 @@ fn start_event_consumers<T, H>(
             BufferSize::TcpEvents,
             Consumer::TcpPacketRegistry {
                 tracker: flow_tracker,
+                graph_observer,
             },
         ),
     )
@@ -483,6 +488,25 @@ async fn event_listener(
         }
     });
 
+    let graph_handle = metrics
+        .as_ref()
+        .map(|metrics| Arc::new(IdentityServiceGraph::new(Arc::clone(metrics))));
+    let graph_observer = graph_handle
+        .as_ref()
+        .map(|graph| graph.clone() as Arc<dyn ServiceGraphObserver>);
+
+    if let Some(graph) = graph_handle {
+        let interval = eviction_interval(graph.ttl());
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(interval);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                graph.evict_expired();
+            }
+        });
+    }
+
     let consumer_metrics = metrics.clone();
     let consumer_cache = Arc::clone(&cache);
     let (veth_events_displayer, net_events_displayer, tcp_registry_events_displayer) =
@@ -490,6 +514,7 @@ async fn event_listener(
             perf_veth_buffers,
             perf_net_events_buffers,
             tcp_registry_buffers,
+            graph_observer,
             move |buffers, size, consumer| {
                 let output = size.set_buffer();
                 let metrics = consumer_metrics.clone();
@@ -807,7 +832,7 @@ mod tests {
     fn event_listener_starts_consumers_with_matching_buffers() {
         let mut calls = Vec::new();
         let handles =
-            start_event_consumers("veth", "network", "tcp", |buffers, size, consumer| {
+            start_event_consumers("veth", "network", "tcp", None, |buffers, size, consumer| {
                 let correct_pair = matches!(
                     (&size, &consumer),
                     (BufferSize::VethEvents, Consumer::VethLog)

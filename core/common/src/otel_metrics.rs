@@ -17,6 +17,7 @@ use crate::buffer_type::{
 use crate::constants::{CONNECTION_DIRECTION_EGRESS, CONNECTION_DIRECTION_INGRESS};
 use crate::metadata::Metadata;
 use crate::semantic::Semantic;
+use crate::service_graph::ServiceGraphEvent;
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter};
 use tracing::debug;
@@ -71,6 +72,9 @@ pub struct Metrics {
 
     /// Unique connections detected by the identity service, partitioned by direction.
     pub identity_connections_total: Counter<u64>,
+
+    /// Weight of a directed edge in the identity service graph.
+    pub identity_service_graph_edge_weight: Gauge<i64>,
 }
 
 // TODO: introduce a metric called total_tcp_packets total_udp_packets
@@ -189,6 +193,11 @@ impl Metrics {
             .with_description(Semantic::IdentityConnectionsTotal.description())
             .build();
 
+        let identity_service_graph_edge_weight = meter
+            .i64_gauge(Semantic::IdentityServiceGraphEdgeWeight.title())
+            .with_description(Semantic::IdentityServiceGraphEdgeWeight.description())
+            .build();
+
         Self {
             events_total,
             socket_events_total,
@@ -207,6 +216,7 @@ impl Metrics {
             ssl_read_bytes,
             ssl_write_bytes,
             identity_connections_total,
+            identity_service_graph_edge_weight,
         }
     }
 
@@ -405,5 +415,31 @@ impl Metrics {
         );
 
         self.identity_connections_total.add(1, &attrs);
+    }
+
+    /// Record the weight of a directed service graph edge.
+    pub fn record_service_graph_edge(&self, event: &ServiceGraphEvent, weight: i64) {
+        let mut attrs = Vec::with_capacity(6);
+        attrs.push(KeyValue::new("source.ip", event.source.ip.to_string()));
+        attrs.push(KeyValue::new(
+            "destination.ip",
+            event.destination.ip.to_string(),
+        ));
+
+        if let Some(service) = &event.source.service {
+            attrs.push(KeyValue::new("source.service", service.clone()));
+        }
+        if let Some(namespace) = &event.source.namespace {
+            attrs.push(KeyValue::new("source.namespace", namespace.clone()));
+        }
+        if let Some(service) = &event.destination.service {
+            attrs.push(KeyValue::new("destination.service", service.clone()));
+        }
+        if let Some(namespace) = &event.destination.namespace {
+            attrs.push(KeyValue::new("destination.namespace", namespace.clone()));
+        }
+
+        self.identity_service_graph_edge_weight
+            .record(weight, &attrs);
     }
 }

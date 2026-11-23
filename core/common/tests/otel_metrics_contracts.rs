@@ -234,3 +234,43 @@ fn identity_connections_are_prefixed_and_partitioned_by_direction() {
                 .any(|attr| attr == &KeyValue::new("direction", "egress"))
     }));
 }
+
+#[test]
+fn service_graph_edges_record_ip_and_enrichment_attributes() {
+    use std::net::Ipv4Addr;
+
+    use cortexbrain_common::service_graph::{ServiceGraphEvent, ServiceNode};
+
+    let mut source = ServiceNode::new(Ipv4Addr::new(10, 0, 0, 1));
+    source.service = Some("api".into());
+    source.namespace = Some("team-a".into());
+
+    let mut destination = ServiceNode::new(Ipv4Addr::new(10, 0, 0, 2));
+    destination.service = Some("db".into());
+    destination.namespace = Some("team-a".into());
+
+    let event = ServiceGraphEvent {
+        source,
+        destination,
+    };
+
+    let snapshot = collect(|metrics| {
+        metrics.record_service_graph_edge(&event, 1);
+    });
+
+    let attrs = gauge(
+        &snapshot,
+        "cortexbrain_identity_service_graph_edge_weight",
+        1,
+    );
+    for expected in [
+        KeyValue::new("source.ip", "10.0.0.1"),
+        KeyValue::new("destination.ip", "10.0.0.2"),
+        KeyValue::new("source.service", "api"),
+        KeyValue::new("source.namespace", "team-a"),
+        KeyValue::new("destination.service", "db"),
+        KeyValue::new("destination.namespace", "team-a"),
+    ] {
+        assert!(attrs.contains(&expected), "missing {expected:?}");
+    }
+}

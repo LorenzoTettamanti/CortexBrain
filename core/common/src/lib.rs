@@ -16,6 +16,7 @@ pub mod otel_init;
 pub mod program_handlers;
 pub mod semantic;
 pub mod metadata;
+pub mod service_graph;
 #[cfg(feature = "buffer-reader")]
 pub mod consumer;
 #[cfg(feature = "experimental")]

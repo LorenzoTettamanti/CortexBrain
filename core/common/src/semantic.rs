@@ -18,6 +18,7 @@ pub enum Semantic {
     SslReadBytes,
     SslWriteBytes,
     IdentityConnectionsTotal,
+    IdentityServiceGraphEdgeWeight,
 }
 
 impl Semantic {
@@ -40,6 +41,9 @@ impl Semantic {
             Semantic::SslReadBytes => "ssl_read_bytes",
             Semantic::SslWriteBytes => "ssl_write_bytes",
             Semantic::IdentityConnectionsTotal => "cortexbrain_identity_connections_total",
+            Semantic::IdentityServiceGraphEdgeWeight => {
+                "cortexbrain_identity_service_graph_edge_weight"
+            }
         }
     }
     pub fn description(&self) -> &'static str {
@@ -76,6 +80,9 @@ impl Semantic {
             Semantic::SslWriteBytes => "Total bytes requested by the ssl_write function",
             Semantic::IdentityConnectionsTotal => {
                 "Total number of unique connections detected by the identity service, partitioned by direction"
+            }
+            Semantic::IdentityServiceGraphEdgeWeight => {
+                "Weight of a directed service graph edge (1 active, 0 expired)"
             }
         }
     }

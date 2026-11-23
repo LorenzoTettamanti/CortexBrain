@@ -3,6 +3,8 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::api::ObjectList;
 use kube::{Api, Client};
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::str::FromStr;
 use tracing::debug;
 
 #[derive(Clone, Debug, Default)]
@@ -10,10 +12,12 @@ pub struct ServiceCache {
     // service_map should maitain the Option Type. Since Option type can be also None
     // it's used to deal all the cases
     pub service_map: Option<HashMap<String, Vec<String>>>,
+    pub pod_ip_map: Option<HashMap<Ipv4Addr, Vec<String>>>,
 }
 impl ServiceCache {
     pub fn init(&mut self) {
         self.service_map = Some(HashMap::<String, Vec<String>>::new());
+        self.pod_ip_map = Some(HashMap::<Ipv4Addr, Vec<String>>::new());
     }
 
     /// Helper function to query all pods form the Kubernetes API
@@ -35,6 +39,9 @@ impl ServiceCache {
 
             debug!("Querying and updating all the pods");
             if let Some(map) = self.service_map.as_mut() {
+                map.clear();
+            }
+            if let Some(map) = self.pod_ip_map.as_mut() {
                 map.clear();
             }
             for pod in all_pods {
@@ -75,7 +82,25 @@ impl ServiceCache {
                     } else {
                         uid
                     };
-                    map.insert(key, vec![name, namespace]);
+                    map.insert(key, vec![name.clone(), namespace.clone()]);
+                }
+
+                if let Some(map) = self.pod_ip_map.as_mut() {
+                    let mut pod_ips = Vec::new();
+                    if let Some(status) = &pod.status {
+                        if let Some(ip) = &status.pod_ip {
+                            pod_ips.push(ip.clone());
+                        }
+                        if let Some(ips) = &status.pod_ips {
+                            pod_ips.extend(ips.iter().map(|pod_ip| pod_ip.ip.clone()));
+                        }
+                    }
+
+                    for ip in pod_ips {
+                        if let std::result::Result::Ok(ip) = Ipv4Addr::from_str(ip.trim()) {
+                            map.insert(ip, vec![name.clone(), namespace.clone()]);
+                        }
+                    }
                 }
             } // insert the pod name and uid from the KubeAPI
         } else {
@@ -83,6 +108,9 @@ impl ServiceCache {
         }
 
         Ok(())
+    }
+    pub fn lookup_ip(&self, ip: &Ipv4Addr) -> Option<&Vec<String>> {
+        self.pod_ip_map.as_ref().and_then(|map| map.get(ip))
     }
 
     pub async fn get_from_cache(&self, container_id: &str) -> Option<&Vec<String>> {
