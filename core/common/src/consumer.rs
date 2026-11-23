@@ -15,7 +15,7 @@
 use crate::buffer_type::{PacketLog, TcpPacketRegistry, VethLog};
 #[cfg(feature = "monitoring-structs")]
 use crate::buffer_type::{
-    CpuFrequency, CpuIdle, MemAlloc, PacketLossMetrics, SchedStatRuntime, SchedStatWait,
+    CpuFrequency, CpuIdle, MemAlloc, PacketLossMetrics, SchedStatRuntime, SchedStatWait, TempEvent,
     TimeStampMetrics,
 };
 use crate::constants::DEFAULT_MAP_READING_TIME;
@@ -137,6 +137,8 @@ pub enum Consumer {
     CpuIdle,
     #[cfg(feature = "monitoring-structs")]
     SslEvents,
+    #[cfg(feature = "monitoring-structs")]
+    TempEvent,
 }
 
 #[cfg(feature = "buffer-reader")]
@@ -770,6 +772,53 @@ impl Consumer {
         }
     }
 
+    /// Read [`TempEvent`] events and record OpenTelemetry observations.
+    #[cfg(feature = "monitoring-structs")]
+    pub async fn read_temp_event(
+        buffers: &mut [BytesMut],
+        tot_events: i32,
+        offset: i32,
+        exporter: &str,
+        metrics: Arc<Metrics>,
+    ) {
+        for i in offset..tot_events {
+            let vec_bytes = &buffers[i as usize];
+            if vec_bytes.len() < std::mem::size_of::<TempEvent>() {
+                error!(
+                    "Corrupted TempEvent data. Raw data: {}. Readed {} bytes expected {} bytes",
+                    vec_bytes
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    vec_bytes.len(),
+                    std::mem::size_of::<TempEvent>()
+                );
+                continue;
+            }
+            if vec_bytes.len() >= std::mem::size_of::<TempEvent>() {
+                let temp_event: TempEvent =
+                    unsafe { std::ptr::read_unaligned(vec_bytes.as_ptr() as *const _) };
+
+                match exporter {
+                    "otlp" => {
+                        let metadata = Metadata::from_ebpf(None, None, &[]);
+                        metrics.record_thermal_zone_temperature(&temp_event, &metadata);
+                    }
+                    _ => continue,
+                }
+
+                let thermal_zone_id = temp_event.id;
+                let temp = temp_event.temp;
+
+                info!(
+                    "TempEvent - thermal_zone_id: {}, temp: {}",
+                    thermal_zone_id, temp
+                );
+            }
+        }
+    }
+
     #[cfg(feature = "monitoring-structs")]
     pub async fn read_ssl_events(
         buffers: &mut [BytesMut],
@@ -1020,6 +1069,17 @@ pub async fn read_perf_buffer<T: std::borrow::BorrowMut<aya::maps::MapData>>(
                                     "otlp",
                                     metrics.clone().expect("Metric required for SslEvents"),
                                     cache.clone().expect("cache required for PacketLossMetrics"),
+                                )
+                                .await
+                            }
+                            #[cfg(feature = "monitoring-structs")]
+                            Consumer::TempEvent => {
+                                Consumer::read_temp_event(
+                                    &mut buffers,
+                                    tot_events,
+                                    offset,
+                                    "otlp",
+                                    metrics.clone().expect("Metric required for TempEvent"),
                                 )
                                 .await
                             }

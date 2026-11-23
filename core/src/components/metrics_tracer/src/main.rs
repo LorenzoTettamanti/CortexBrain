@@ -10,14 +10,16 @@ mod network;
 mod ssl;
 
 use crate::bindings::net_device;
-use crate::cpu::{cpu_idle, per_cpu_bytes_alloc, sched_stat_runtime, sched_stat_wait};
-use crate::data_structures::CpuFrequency;
+use crate::cpu::{
+    cpu_idle, measure_thermal_zone, per_cpu_bytes_alloc, sched_stat_runtime, sched_stat_wait,
+};
 use crate::data_structures::NET_METRICS;
 use crate::data_structures::{CPU_FREQUENCY, SchedStatWait};
 use crate::data_structures::{
     CPU_IDLE, PacketLossMetrics, TASK_COMM_LEN, TIME_STAMP_EVENTS, TIME_STAMP_START,
     TimeStampEvent, TimeStampStartInfo,
 };
+use crate::data_structures::{CpuFrequency, TEMPERATURE_MONITOR, TempEvent};
 use crate::data_structures::{MEM_ALLOC, SCHED_STAT_RUNTIME, SCHED_STAT_WAIT};
 use crate::data_structures::{MemAlloc, SchedStatRuntime};
 use crate::memory::enter_mmap;
@@ -185,6 +187,23 @@ fn sched_stat_runtime_tracer(ctx: &TracePointContext) -> Result<(), i64> {
 
     unsafe { SCHED_STAT_RUNTIME.output(ctx, &sched_stat_runtime_data, 0) };
 
+    Ok(())
+}
+
+#[tracepoint]
+fn trace_temperature(ctx: TracePointContext) -> u32 {
+    match temperature_tracer(&ctx) {
+        Ok(_) => 0,
+        Err(e) => e as u32,
+    }
+}
+fn temperature_tracer(ctx: &TracePointContext) -> Result<(), i64> {
+    let (id, temp) = measure_thermal_zone(ctx)?;
+
+    let temp_data = TempEvent { id, temp };
+    unsafe {
+        TEMPERATURE_MONITOR.output(ctx, &temp_data, 0);
+    }
     Ok(())
 }
 

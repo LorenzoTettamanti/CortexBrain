@@ -17,6 +17,7 @@ pub enum Semantic {
     CpuIdleState,
     SslReadBytes,
     SslWriteBytes,
+    ThermalZoneTemperature,
     IdentityConnectionsTotal,
 }
 
@@ -39,6 +40,7 @@ impl Semantic {
             Semantic::CpuIdleState => "cpu_idle_state",
             Semantic::SslReadBytes => "ssl_read_bytes",
             Semantic::SslWriteBytes => "ssl_write_bytes",
+            Semantic::ThermalZoneTemperature => "thermal_zone_temperature",
             Semantic::IdentityConnectionsTotal => "cortexbrain_identity_connections_total",
         }
     }
@@ -74,6 +76,9 @@ impl Semantic {
             }
             Semantic::SslReadBytes => "Total bytes requested by the ssl_read function",
             Semantic::SslWriteBytes => "Total bytes requested by the ssl_write function",
+            Semantic::ThermalZoneTemperature => {
+                "Current thermal zone temperature in millidegrees Celsius"
+            }
             Semantic::IdentityConnectionsTotal => {
                 "Total number of unique connections detected by the identity service, partitioned by direction"
             }

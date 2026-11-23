@@ -208,6 +208,16 @@ pub struct SslEvent {
 #[cfg(feature = "monitoring-structs")]
 unsafe impl aya::Pod for SslEvent {}
 
+#[cfg(feature = "monitoring-structs")]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Zeroable)]
+pub struct TempEvent {
+    pub id: i32,
+    pub temp: i32,
+}
+#[cfg(feature = "monitoring-structs")]
+unsafe impl aya::Pod for TempEvent {}
+
 /// Perform a byte swap from little-endian to big-endian.
 ///
 /// Used to reconstruct the correct IPv4 address from the u32 representation.
@@ -247,6 +257,8 @@ pub enum BufferSize {
     CpuIdle,
     #[cfg(feature = "monitoring-structs")]
     SslEvents,
+    #[cfg(feature = "monitoring-structs")]
+    TempEvent,
 }
 
 #[cfg(feature = "buffer-reader")]
@@ -276,6 +288,8 @@ impl BufferSize {
             BufferSize::CpuIdle => std::mem::size_of::<CpuIdle>(),
             #[cfg(feature = "monitoring-structs")]
             BufferSize::SslEvents => std::mem::size_of::<SslEvent>(),
+            #[cfg(feature = "monitoring-structs")]
+            BufferSize::TempEvent => std::mem::size_of::<TempEvent>(),
         }
     }
 
@@ -339,6 +353,11 @@ impl BufferSize {
             }
             #[cfg(feature = "monitoring-structs")]
             BufferSize::SslEvents => {
+                let capacity = self.get_size() * 1024;
+                return vec![BytesMut::with_capacity(capacity); tot_cpu];
+            }
+            #[cfg(feature = "monitoring-structs")]
+            BufferSize::TempEvent => {
                 let capacity = self.get_size() * 1024;
                 return vec![BytesMut::with_capacity(capacity); tot_cpu];
             }

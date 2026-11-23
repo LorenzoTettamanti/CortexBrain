@@ -287,6 +287,10 @@ pub async fn event_listener(bpf_maps: BpfMapsData, meter: Meter) -> Result<(), a
         .remove("ssl_events")
         .expect("Cannot create ssl_events perf buffer");
 
+    let (_temperature_monitor_array, temperature_monitor_perf_buffer) = maps
+        .remove("temperature_monitor")
+        .expect("Cannot create temperature_monitor perf buffer");
+
     // Allocate byte-buffers sized for each structure type
     let net_metrics_buffers = BufferSize::NetworkMetricsEvents.set_buffer();
     let time_stamp_events_buffers = BufferSize::TimeMetricsEvents.set_buffer();
@@ -296,6 +300,7 @@ pub async fn event_listener(bpf_maps: BpfMapsData, meter: Meter) -> Result<(), a
     let sched_stat_wait_buffers = BufferSize::SchedStatWait.set_buffer();
     let sched_stat_runtime_buffers = BufferSize::SchedStatRuntime.set_buffer();
     let ssl_events_buffers = BufferSize::SslEvents.set_buffer();
+    let temperature_monitor_buffers = BufferSize::TempEvent.set_buffer();
 
     let (metrics, cache) = init_metrics_and_cache(&meter).await?;
 
@@ -471,6 +476,23 @@ pub async fn event_listener(bpf_maps: BpfMapsData, meter: Meter) -> Result<(), a
         })
     };
 
+    let temperature_monitor_metrics = {
+        let metrics = Arc::clone(&metrics);
+        let service_cache = Arc::clone(&cache);
+        let array_buffers = temperature_monitor_perf_buffer;
+        let buffers = temperature_monitor_buffers;
+        tokio::spawn(async move {
+            read_perf_buffer(
+                array_buffers,
+                buffers,
+                Consumer::TempEvent,
+                Some(metrics),
+                Some(service_cache),
+            )
+            .await;
+        })
+    };
+
     info!("Event listeners started, entering main loop...");
 
     tokio::select! {
@@ -525,6 +547,12 @@ pub async fn event_listener(bpf_maps: BpfMapsData, meter: Meter) -> Result<(), a
         result = ssl_events_metrics => {
             if let Err(e) = result {
                 error!("Ssl events task failed: {:?}", e);
+            }
+        }
+
+        result = temperature_monitor_metrics => {
+            if let Err(e) = result {
+                error!("Temperature monitor events task failed: {:?}", e);
             }
         }
 

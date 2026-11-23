@@ -3,7 +3,7 @@
 use bytemuck::Zeroable;
 use cortexbrain_common::buffer_type::{
     CpuFrequency, CpuIdle, MemAlloc, PacketLossMetrics, SchedStatRuntime, SchedStatWait, SslEvent,
-    TimeStampMetrics,
+    TempEvent, TimeStampMetrics,
 };
 use cortexbrain_common::constants::{CONNECTION_DIRECTION_EGRESS, CONNECTION_DIRECTION_INGRESS};
 use cortexbrain_common::metadata::Metadata;
@@ -233,4 +233,20 @@ fn identity_connections_are_prefixed_and_partitioned_by_direction() {
                 .attributes()
                 .any(|attr| attr == &KeyValue::new("direction", "egress"))
     }));
+}
+
+#[test]
+fn thermal_zone_temperature_records_latest_value_and_zone_id() {
+    let metadata = Metadata::from_ebpf(None, None, &[]);
+    let snapshot = collect(|metrics| {
+        let mut event = TempEvent::zeroed();
+        event.id = 1;
+        event.temp = 45000;
+        metrics.record_thermal_zone_temperature(&event, &metadata);
+        event.temp = 47000;
+        metrics.record_thermal_zone_temperature(&event, &metadata);
+    });
+
+    let attrs = gauge(&snapshot, "thermal_zone_temperature", 47000);
+    assert!(attrs.contains(&KeyValue::new("thermal_zone_id", 1_i64)));
 }

@@ -105,6 +105,15 @@ pub struct SslEvent {
     pub cgroup_id: u64,
 }
 
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TempEvent {
+    pub id: i32,
+    pub temp: i32
+}
+
+
+
 // Map: connect-start timestamp by socket pointer
 #[map(name = "time_stamp_start")]
 pub static mut TIME_STAMP_START: HashMap<*mut core::ffi::c_void, TimeStampStartInfo> =
@@ -143,3 +152,6 @@ pub static mut SSL_CTX_MAP: HashMap<u64, i32> =
 
 #[map(name = "ssl_events")]
 pub static SSL_EVENTS: PerfEventArray<SslEvent> = PerfEventArray::new(0);
+
+#[map(name = "temperature_monitor")]
+pub static TEMPERATURE_MONITOR: PerfEventArray<TempEvent> = PerfEventArray::new(0);

@@ -51,6 +51,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mem_alloc_bpf = bpf.clone();
     let sched_stat_wait_bpf = bpf.clone();
     let sched_stat_runtime_bpf = bpf.clone();
+    let temperature_monitor_bpf = bpf.clone();
     let ssl_read_bpf = bpf.clone();
     let ssl_read_ret_bpf = bpf.clone();
     let ssl_write_bpf = bpf.clone();
@@ -71,6 +72,7 @@ async fn main() -> Result<(), anyhow::Error> {
         "sched_stat_wait".to_string(),
         "sched_stat_runtime".to_string(),
         "ssl_events".to_string(),
+        "temperature_monitor".to_string(),
     ];
 
     match init_bpf_maps(bpf.clone(), map_data) {
@@ -144,6 +146,15 @@ async fn main() -> Result<(), anyhow::Error> {
                             "trace_sched_stat_runtime",
                             "sched",
                             "sched_stat_runtime",
+                        )
+                        .context(
+                            "An error occurred during the execution of load_program function",
+                        )?;
+                        load_tracepoint_program(
+                            temperature_monitor_bpf,
+                            "trace_temperature",
+                            "thermal",
+                            "thermal_temperature",
                         )
                         .context(
                             "An error occurred during the execution of load_program function",

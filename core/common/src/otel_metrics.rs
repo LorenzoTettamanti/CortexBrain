@@ -12,7 +12,7 @@
 
 use crate::buffer_type::{
     CpuFrequency, CpuIdle, MemAlloc, PacketLossMetrics, SchedStatRuntime, SchedStatWait, SslEvent,
-    TimeStampMetrics,
+    TempEvent, TimeStampMetrics,
 };
 use crate::constants::{CONNECTION_DIRECTION_EGRESS, CONNECTION_DIRECTION_INGRESS};
 use crate::metadata::Metadata;
@@ -68,6 +68,9 @@ pub struct Metrics {
 
     pub ssl_read_bytes: Gauge<i64>,
     pub ssl_write_bytes: Gauge<i64>,
+
+    /// Current thermal zone temperature in millidegrees Celsius per thermal_zone_id.
+    pub thermal_zone_temperature: Gauge<i64>,
 
     /// Unique connections detected by the identity service, partitioned by direction.
     pub identity_connections_total: Counter<u64>,
@@ -184,6 +187,11 @@ impl Metrics {
             .with_description(Semantic::SslWriteBytes.description())
             .build();
 
+        let thermal_zone_temperature = meter
+            .i64_gauge(Semantic::ThermalZoneTemperature.title())
+            .with_description(Semantic::ThermalZoneTemperature.description())
+            .build();
+
         let identity_connections_total = meter
             .u64_counter(Semantic::IdentityConnectionsTotal.title())
             .with_description(Semantic::IdentityConnectionsTotal.description())
@@ -206,6 +214,7 @@ impl Metrics {
             cpu_idle_state,
             ssl_read_bytes,
             ssl_write_bytes,
+            thermal_zone_temperature,
             identity_connections_total,
         }
     }
@@ -382,6 +391,24 @@ impl Metrics {
 
         self.events_total.add(1, &attrs);
         self.ssl_write_bytes.record(m.size as i64, &attrs);
+    }
+
+    /// Record a single [`TempEvent`] event.
+    ///
+    /// Updates `thermal_zone_temperature` gauge to the latest temperature for
+    /// the given `thermal_zone_id`.
+    pub fn record_thermal_zone_temperature(&self, m: &TempEvent, metadata: &Metadata) {
+        let mut attrs = self.build_attrs(metadata);
+
+        debug!(
+            "Building attributes for thermal zone temperature metrics. Attributes: {:?}",
+            attrs
+        );
+
+        attrs.push(KeyValue::new("thermal_zone_id", m.id as i64));
+
+        self.events_total.add(1, &attrs);
+        self.thermal_zone_temperature.record(m.temp as i64, &attrs);
     }
 
     /// Record a new unique connection observed by the identity service.

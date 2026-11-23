@@ -64,7 +64,7 @@ pub fn sched_stat_wait(ctx: &TracePointContext) -> Result<((u32, u64, [u8; 16], 
     let cgroup_id: u64 = unsafe { bpf_get_current_cgroup_id() };
 
     let delay = unsafe { ctx.read_at(delay_offset) }?;
-    let command = unsafe{ctx.read_at(command_offset)}?;
+    let command = unsafe { ctx.read_at(command_offset) }?;
 
     Ok((tgid, delay, command, cgroup_id))
 }
@@ -81,4 +81,29 @@ pub fn sched_stat_runtime(ctx: &TracePointContext) -> Result<((u32, u64, [u8; 16
     let command = ctx.command()?;
 
     Ok((tgid, runtime, command, cgroup_id))
+}
+
+pub fn measure_thermal_zone(ctx: &TracePointContext) -> Result<(i32, i32), i64> {
+    /*
+    name: thermal_temperature
+    ID: 1627
+    format:
+            field:unsigned short common_type;       offset:0;       size:2; signed:0;
+            field:unsigned char common_flags;       offset:2;       size:1; signed:0;
+            field:unsigned char common_preempt_count;       offset:3;       size:1; signed:0;
+            field:int common_pid;   offset:4;       size:4; signed:1;
+
+            field:__data_loc char[] thermal_zone;   offset:8;       size:4; signed:0;
+            field:int id;   offset:12;      size:4; signed:1;
+            field:int temp_prev;    offset:16;      size:4; signed:1;
+            field:int temp; offset:20;      size:4; signed:1;
+
+    print fmt: "thermal_zone=%s id=%d temp_prev=%d temp=%d", __get_str(thermal_zone), REC->id, REC->temp_prev, REC->temp */
+    let thermal_zone_offset = 8;
+    let temp_offset = 20;
+    let id_offset = 12;
+
+    let id = unsafe { ctx.read_at(id_offset) }?;
+    let temp = unsafe { ctx.read_at(temp_offset) }?;
+    Ok((id, temp))
 }
