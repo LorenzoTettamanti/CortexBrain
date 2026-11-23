@@ -4,10 +4,12 @@
  *   1. TCP events tracker
  *   2. veth creation and deletion tracker
  *   3. TC (traffic control) tracker
+ *   4. [Experimental]: cgroup scanner
  *
  */
 
 mod helpers;
+mod service_discovery;
 
 use crate::helpers::{attach_and_register, get_veth_channels};
 use aya::{
@@ -16,6 +18,9 @@ use aya::{
     programs::{SchedClassifier, TcAttachType},
     util::online_cpus,
 };
+
+#[cfg(feature = "experimental")]
+use crate::helpers::scan_cgroup_cronjob;
 
 use cortexbrain_common::{
     buffer_type::BufferSize,
@@ -33,6 +38,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+#[cfg(not(feature = "experimental"))]
 use std::future::Future;
 
 use anyhow::{Context, Ok, anyhow};
@@ -366,6 +372,7 @@ fn start_event_consumers<T, H>(
     )
 }
 
+#[cfg(not(feature = "experimental"))]
 enum ListenerExit {
     Veth(Result<(), tokio::task::JoinError>),
     Network(Result<(), tokio::task::JoinError>),
@@ -373,6 +380,7 @@ enum ListenerExit {
     Shutdown,
 }
 
+#[cfg(not(feature = "experimental"))]
 async fn wait_for_event_listener(
     veth: tokio::task::JoinHandle<()>,
     network: tokio::task::JoinHandle<()>,
@@ -444,6 +452,12 @@ async fn event_listener(bpf_maps: BpfMapsData) -> Result<(), anyhow::Error> {
             },
         );
 
+    #[cfg(feature = "experimental")]
+    let scan_cgroup_cronjob = tokio::spawn(async move {
+        let _ = scan_cgroup_cronjob(180).await;
+    });
+
+    #[cfg(not(feature = "experimental"))]
     match wait_for_event_listener(
         veth_events_displayer,
         net_events_displayer,
@@ -470,6 +484,40 @@ async fn event_listener(bpf_maps: BpfMapsData) -> Result<(), anyhow::Error> {
         ListenerExit::Shutdown => {
             info!("Triggered Exiting...");
         }
+    }
+    #[cfg(feature = "experimental")]
+    tokio::select! {
+         result = scan_cgroup_cronjob=>{
+            match result{
+                Err(e)=>error!("scan_cgroup_cronjob panicked {:?}",e),
+                std::result::Result::Ok(_) => info!("cgroup scan cronjob exited"),
+                }
+            }
+        result = veth_events_displayer=>{
+            match result{
+                Err(e)=>error!("veth_event_displayer panicked {:?}",e),
+                std::result::Result::Ok(_) => info!("Found new veth_event"),
+                }
+        }
+
+        result = net_events_displayer=>{
+           match result{
+                Err(e)=>error!("net_event_displayer panicked {:?}",e),
+               std::result::Result::Ok(_)  => info!("Found new net_event"),
+            }
+        }
+
+        result = tcp_registry_events_displayer => {
+            match result{
+                Err(e)=>error!("tcp_registry_events_displayer panicked {:?}",e),
+                std::result::Result::Ok(_)=>info!("Found new tcp_register event")
+            }
+        }
+
+        _= signal::ctrl_c()=>{
+            info!("Triggered Exiting...");
+        }
+
     }
 
     Ok(())
@@ -763,6 +811,7 @@ mod tests {
         assert_eq!(handles, ("veth", "network", "tcp"));
     }
 
+    #[cfg(not(feature = "experimental"))]
     #[tokio::test]
     async fn event_listener_observes_each_consumer_exit_and_shutdown() {
         for exit in ["veth", "network", "tcp", "shutdown"] {
