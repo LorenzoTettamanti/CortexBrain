@@ -40,7 +40,7 @@ The `identity` Deployment includes an initContainer `bpf-map-permissions` that r
 ## Pinned map path mismatch
 
 !!! warning
-    The Agent hardcodes the pinned map paths `/sys/fs/bpf/maps/events_map`, `/sys/fs/bpf/maps/blocklist_map`, `/sys/fs/bpf/trace_maps/net_metrics`, and `/sys/fs/bpf/trace_maps/time_stamp_events` (see `core/api/src/api.rs`). The Identity and Metrics services pin under `${PIN_MAP_PATH}`, which the Dockerfiles set to `/sys/fs/bpf/maps` and `/sys/fs/bpf/trace_maps` respectively. The deployment must reconcile these paths.
+    The Agent hardcodes the pinned map paths `/sys/fs/bpf/maps/events_map`, `/sys/fs/bpf/trace_maps/net_metrics`, and `/sys/fs/bpf/trace_maps/time_stamp_events` (see `core/api/src/api.rs`). The `Blocklist` map is resolved from `PIN_MAP_PATH` + `Blocklist` on both Agent and Identity sides. The Identity and Metrics services pin under `${PIN_MAP_PATH}`, which the Dockerfiles set to `/sys/fs/bpf/maps` and `/sys/fs/bpf/trace_maps` respectively. The deployment must reconcile these paths.
 
 **Symptoms**: the `cortexflow-agent` pod crashes on startup with `No such file or directory` when calling `MapData::from_pin(...)`.
 
@@ -57,7 +57,7 @@ The `identity` Deployment includes an initContainer `bpf-map-permissions` that r
    ```
 3. Confirm the agent expects maps at `/sys/fs/bpf/maps/...` and `/sys/fs/bpf/trace_maps/...`.
 
-**Fix**: ensure the `PIN_MAP_PATH` of Identity is `/sys/fs/bpf/maps` and of Metrics is `/sys/fs/bpf/trace_maps` (these are the defaults in their Dockerfiles). If you changed them, update the agent's hardcoded paths in `core/api/src/api.rs` accordingly, or create symlinks under `/sys/fs/bpf/`.
+**Fix**: ensure the `PIN_MAP_PATH` of Identity is `/sys/fs/bpf/maps` and of Metrics is `/sys/fs/bpf/trace_maps` (these are the defaults in their Dockerfiles). If you changed them, update the agent's hardcoded paths for `events_map`, `net_metrics` and `time_stamp_events` in `core/api/src/api.rs` accordingly, or create symlinks under `/sys/fs/bpf/`. The `Blocklist` map follows `PIN_MAP_PATH` on both sides.
 
 ## Port-forward to the agent
 
@@ -91,7 +91,7 @@ kubectl exec -it cortexflow-identity-<pod> -c bpftool-control-manager -n cortexf
 Inspect a specific pinned map:
 
 ```bash
-kubectl exec -it cortexflow-identity-<pod> -c bpftool-control-manager -n cortexflow -- bpftool map show pinned /sys/fs/bpf/maps/blocklist_map
+kubectl exec -it cortexflow-identity-<pod> -c bpftool-control-manager -n cortexflow -- bpftool map show pinned /sys/fs/bpf/maps/Blocklist
 ```
 
 List loaded BPF programs:
@@ -133,6 +133,27 @@ The MCP server (see [MCP Server](mcp-server.md)) queries Prometheus at the hardc
    ```bash
    curl 'http://localhost:9090/api/v1/query?query=up'
    ```
+
+## Thermal metric missing
+
+If `thermal_zone_temperature` is absent, the kernel may not expose the `thermal_temperature` tracepoint on this host:
+
+```bash
+ls /sys/kernel/tracing/events/thermal/thermal_temperature
+# or, on older kernels
+ls /sys/kernel/debug/tracing/events/thermal/thermal_temperature
+```
+
+The metrics service loads the `trace_temperature` program at startup. If the tracepoint is missing, the loader logs an error and the thermal metric is not exported. Check `kubectl logs -n cortexflow -l app=cortexflow-metrics` and confirm the kernel was built with thermal zone support.
+
+## Identity metrics or service graph missing
+
+The Identity service exports `cortexbrain_identity_*` metrics through OTLP. If they are missing:
+
+1. Verify `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` are set for `cortexflow-identity`.
+2. Check that the pod can `get/list/watch` Pods; without it the Kubernetes service cache is empty and graph nodes only carry IP labels.
+3. Look for `Service cache population failed` or `Service cache refresh failed` in the Identity logs.
+4. Service graph edges expire after `GRAPH_TTL` seconds (default 60). Lower it only for debugging; very low values increase metric churn.
 
 ## See also
 

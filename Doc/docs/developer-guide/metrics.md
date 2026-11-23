@@ -142,11 +142,31 @@ All OTel instruments share the following attribute set:
 | `ssl_read_bytes` | `Gauge<i64>` | Total bytes requested by `SSL_read` |
 | `ssl_write_bytes` | `Gauge<i64>` | Total bytes requested by `SSL_write` |
 
+### Identity metrics
+
+These instruments are emitted by the Identity service (`core/src/components/identity/`). They use the common attributes above plus the extra labels listed in the table.
+
+| Instrument name | Type | Description | Extra attributes |
+|-----------------|------|-------------|------------------|
+| `cortexbrain_identity_connections_total` | `Counter<u64>` | Unique connections, de-duplicated by 5-tuple and direction for `IDENTITY_FLOW_TTL_SECS` | `direction` (`ingress` / `egress`) |
+| `cortexbrain_identity_blocklist_hits_total` | `Counter<u64>` | Packets dropped by the Identity TC blocklist classifier | `blocked_ip` |
+| `cortexbrain_identity_service_graph_edge_weight` | `Gauge<i64>` | Directed service graph edge weight (`1` active, `0` expired) | `source.ip`, `destination.ip`, optional `source.service`, `source.namespace`, `destination.service`, `destination.namespace` |
+
+The service graph key is the source/destination IP pair. `service` and `namespace` are filled from the Kubernetes pod cache or from the local process metadata, depending on the connection direction. Edges expire after `GRAPH_TTL` seconds (default 60).
+
+### Thermal metrics
+
+| Instrument name | Type | Description | Extra attributes |
+|-----------------|------|-------------|------------------|
+| `thermal_zone_temperature` | `Gauge<i64>` | Latest temperature in millidegrees Celsius from the `thermal_temperature` tracepoint | `thermal_zone_id` |
+
 ### Metrics source code
 
 The **0.1.5** version update the following modules (`core/src/components/metrics_tracer/src/`):
 
-- `cpu.rs` - CPU frequency and bytes-alloc events
+- `cpu.rs` - CPU frequency, bytes-alloc and thermal zone events
 - `memory.rs` - `mmap` syscall tracing
 - `network.rs` - packet-loss and timestamp events (extended from current)
 - `ssl.rs` - `SSL_read` / `SSL_write` tracing via `ssl_ctx_map`
+
+Identity instruments live in `core/common/src/otel_metrics.rs` and `core/common/src/semantic.rs`; the service graph implementation is in `core/src/components/identity/src/service_graph.rs`.

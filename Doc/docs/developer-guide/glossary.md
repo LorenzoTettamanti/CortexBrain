@@ -25,7 +25,7 @@ This page defines the terms and acronyms used across the documentation. It is gr
 | Term | Definition |
 |------|------------|
 | **conntracker** | The eBPF kernel crate (`core/src/components/conntracker/`) that produces connection events via a TC classifier and TCP kprobes. |
-| **identity** | The userspace service (`core/src/components/identity/`) that loads the conntracker eBPF object, pins `events_map` and `blocklist_map`, seeds the blocklist from the `cortexbrain-client-config` ConfigMap (Kubernetes Only), and attaches the TC classifier to veths. |
+| **identity** | The userspace service (`core/src/components/identity/`) that loads the conntracker eBPF object, pins `events_map` and `Blocklist`, syncs the blocklist from the `cortexbrain-client-config` ConfigMap (or `BLOCKLIST_FILE`), and attaches the TC classifier to veths. |
 | **metrics_tracer** | The eBPF kernel crate (`core/src/components/metrics_tracer/`) that produces socket-level metrics and TCP latency via kprobes. |
 | **metrics** | The userspace service (`core/src/components/metrics/`) that loads the metrics_tracer eBPF object |
 | **agent** | The gRPC server crate (`core/api/`, binary `agent-api`) that opens the pinned maps, drains the perf buffers into mpsc channels, and serves the `agent.Agent` RPCs on `:9090`. |
@@ -43,7 +43,7 @@ This page defines the terms and acronyms used across the documentation. It is gr
 | **privileged** | A security context flag that gives a container nearly all host capabilities. CortexBrain pods require it for BPF map and kprobe access. |
 | **ConfigMap** | A Kubernetes object holding non-secret key-value data. `cortexbrain-client-config` stores the blocklist. |
 | **ServiceAccount** | A Kubernetes identity for pods. CortexBrain deployments currently use the `default` ServiceAccount. |
-| **RBAC** | Role-Based Access Control. The `configmap-reader` Roles grant the deployments read access to ConfigMaps. |
+| **RBAC** | Role-Based Access Control. The `configmap-reader` Roles grant the deployments read access to ConfigMaps, Services, and Pods. |
 
 ## Networking
 
@@ -65,6 +65,9 @@ This page defines the terms and acronyms used across the documentation. It is gr
 | **Counter** | An OTel instrument that only increases (e.g. `events_total`). |
 | **Gauge** | An OTel instrument that can go up or down. |
 | **Histogram** | An OTel instrument that records a distribution (e.g. `latency_us`). |
+| **Identity flow tracker** | The userspace de-duplication table in the Identity service. It keys TCP flows by 5-tuple and direction and treats a flow as new after `IDENTITY_FLOW_TTL_SECS` of inactivity. |
+| **Service graph** | A directed graph of source/destination endpoints observed by the Identity service. Edges are keyed by IP pair, enriched with service/namespace, refreshed on activity, and evicted after `GRAPH_TTL`. |
+| **Thermal zone** | A kernel thermal sensor exposed through the `thermal_temperature` tracepoint. The metrics service exports the latest value as `thermal_zone_temperature` with a `thermal_zone_id` label. |
 | **mpsc channel** | Multi-producer, single-consumer channel from the Rust `tokio` library. The agent uses mpsc channels to move events from the reader tasks to the gRPC handlers. |
 
 ## Model Context Protocol (MCP)

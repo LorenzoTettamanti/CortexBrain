@@ -24,10 +24,10 @@ The Agent is a **consumer and aggregator** of data produced by metrics service w
 | `EventsMap` | `/sys/fs/bpf/maps/events_map` | Identity (`identity/src/map_handlers.rs`) | `PacketLog` | `ActiveConnections` |
 | `net_metrics` | `/sys/fs/bpf/trace_maps/net_metrics` | Metrics (`metrics/src/maps_handlers.rs`) | `NetworkMetrics` | `GetDroppedPacketsMetrics` |
 | `time_stamp_events` | `/sys/fs/bpf/trace_maps/time_stamp_events` | Metrics (`metrics/src/maps_handlers.rs`) | `TimeStampMetrics` | `GetLatencyMetrics` |
-| `Blocklist` | `/sys/fs/bpf/maps/blocklist_map` | Identity (seeded from the `cortexbrain-client-config` ConfigMap) | `[u8;4] ->[u8;4]` | `AddIpToBlocklist` / `CheckBlocklist` / `RmIpFromBlocklist` |
+| `Blocklist` | `/sys/fs/bpf/maps/Blocklist` | Identity (seeded from the `cortexbrain-client-config` ConfigMap or `BLOCKLIST_FILE`) | `[u8;4] ->[u8;4]` | `AddIpToBlocklist` / `CheckBlocklist` / `RmIpFromBlocklist` |
 
 !!! warning
-    The Agent hardcodes the paths `/sys/fs/bpf/maps/...` and `/sys/fs/bpf/trace_maps/...` (`core/api/src/api.rs`), while the Identity and Metrics services pin under `${PIN_MAP_PATH}` which defaults to `/sys/fs/bpf/cortexbrain-identity-service/...`. This implies a deployment-time mount/symlink convention that is not captured in code. If you change the pin paths, update both sides.
+    The Agent hardcodes the paths of `events_map`, `net_metrics` and `time_stamp_events` (`core/api/src/api.rs`), while the Identity and Metrics services pin under `${PIN_MAP_PATH}`. The `Blocklist` path is resolved from `PIN_MAP_PATH` + `Blocklist` on both sides. If you change the pin paths, update both sides.
 
 ## The `agent.Agent` service
 
@@ -66,11 +66,11 @@ The CLI (`cli/`) is a tonic gRPC client. The mapping between `cfcli` commands an
 The **Identity** service (`core/src/components/identity/`) is the **producer** of the connection events and the blocklist. It:
 
 1. Loads the `conntracker` eBPF object.
-2. Extracts and pins `EventsMap` (->`events_map`), `Blocklist` (->`blocklist_map`), and other maps.
-3. Seeds the `Blocklist` map from the `cortexbrain-client-config` Kubernetes ConfigMap on startup.
+2. Extracts and pins `EventsMap` (->`events_map`), `Blocklist` (->`Blocklist`), and other maps.
+3. Keeps the `Blocklist` map in sync every 30 seconds with the `cortexbrain-client-config` Kubernetes ConfigMap. When Kubernetes is unavailable, it uses the file pointed to by `BLOCKLIST_FILE` instead.
 4. Attaches the TC classifier and kprobes that fill the perf buffers.
 
-The **Agent** never calls Identity directly - they communicate solely through the pinned BPF maps in `/sys/fs/bpf/`. The Agent is also a **mutator** of the `Blocklist` map that Identity owns: `AddIpToBlocklist` and `RmIpFromBlocklist` write to it at runtime, on top of the initial ConfigMap seeding.
+The **Agent** never calls Identity directly - they communicate solely through the pinned BPF maps in `/sys/fs/bpf/`. The Agent is also a **mutator** of the `Blocklist` map that Identity owns: `AddIpToBlocklist` and `RmIpFromBlocklist` write to it at runtime. The periodic sync treats the ConfigMap/file as the source of truth, so runtime-only changes not reflected in that source are overwritten on the next refresh.
 
 ## Security notes
 

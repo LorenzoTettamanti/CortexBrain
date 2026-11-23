@@ -39,10 +39,21 @@ CortexBrain attaches eBPF programs to the following kernel hook points. The diag
 | `metrics_tracer` | kprobe | `tcp_identify_packet_loss` | `net_metrics` | `NetworkMetrics` (socket stats + drops) |
 | `tcp_connect` | kprobe | `tcp_v4_connect`, `tcp_v6_connect` | `time_stamp_start` | start timestamp keyed by socket pointer |
 | `tcp_rcv_state_process` | kprobe | `tcp_rcv_state_process` | `time_stamp_events` | `TimeStampEvent` (latency `delta_us`) |
+| `trace_temperature` | tracepoint | `thermal_temperature` | `temperature_monitor` | `TempEvent` (thermal zone id + temperature) |
 
 **Source files**:
 - `core/src/components/conntracker/src/main.rs` and sub-modules (`tc.rs`, `veth_tracer.rs`, `tcp_analyzer.rs`, `data_structures.rs`)
 - `core/src/components/metrics_tracer/src/main.rs` and `data_structures.rs`
+
+### Identity metrics and service graph
+
+The Identity service exports OTLP metrics in addition to the pinned maps:
+
+- `cortexbrain_identity_connections_total` counts unique TCP flows. Events carry a `direction` (ingress/egress) and are de-duplicated by 5-tuple for `IDENTITY_FLOW_TTL_SECS`.
+- `cortexbrain_identity_blocklist_hits_total` counts packets dropped by the TC blocklist classifier.
+- `cortexbrain_identity_service_graph_edge_weight` tracks a directed service graph keyed by source/destination IP. Nodes are enriched from the Kubernetes pod cache or the local process metadata; edges are refreshed on activity and evicted after `GRAPH_TTL` seconds.
+
+The Identity deployment needs `get/list/watch` on `pods` (in addition to ConfigMaps) to populate the service cache, and an OTLP endpoint to export the metrics.
 
 ### Deployment topology
 
@@ -50,8 +61,8 @@ All CortexBrain components run in the `cortexflow` namespace. The core deploymen
 
 | Pod (Deployment) | Container & binary | Image | Network exposure | BPF maps (producer / consumer) |
 |------------------|--------------------|-------|------------------|--------------------------------|
-| `cortexflow-agent` | `agent` -> `/usr/local/bin/agent-api` | `lorenzotettamanti/cortexflow-agent:latest` | Service `cortexflow-agent` ClusterIP TCP 9090 (grpc); reached by `cfcli` via `kubectl port-forward` | **Consumer only** - reads `events_map`, `net_metrics`, `time_stamp_events`, `blocklist_map` |
-| `cortexflow-identity` | initContainer `bpf-map-permissions` (mounts bpffs); `identity` -> `/usr/local/bin/cortexflow-identity-service`; sidecar `bpftool-control-manager` | `lorenzotettamanti/cortexflow-identity:latest` | None (no Service) | **Producer** - pins `events_map`, `veth_map`, `blocklist_map`, `tcp_packet_registry`; seeds `blocklist_map` from the `cortexbrain-client-config` ConfigMap |
+| `cortexflow-agent` | `agent` -> `/usr/local/bin/agent-api` | `lorenzotettamanti/cortexflow-agent:latest` | Service `cortexflow-agent` ClusterIP TCP 9090 (grpc); reached by `cfcli` via `kubectl port-forward` | **Consumer only** - reads `events_map`, `net_metrics`, `time_stamp_events`, `Blocklist` |
+| `cortexflow-identity` | initContainer `bpf-map-permissions` (mounts bpffs); `identity` -> `/usr/local/bin/cortexflow-identity-service`; sidecar `bpftool-control-manager` | `lorenzotettamanti/cortexflow-identity:latest` | None (no Service) | **Producer** - pins `events_map`, `veth_map`, `Blocklist`, `tcp_packet_registry`; syncs `Blocklist` every 30s from the `cortexbrain-client-config` ConfigMap or `BLOCKLIST_FILE`; emits connection, blocklist-hit and service-graph OTLP metrics; reads pods for the service cache |
 | `cortexflow-metrics` | `metrics` -> `/usr/local/bin/cortexflow-metrics`; sidecar `bpftool-control-manager` | `lorenzotettamanti/cortexflow-metrics:latest` | None (no Service) | **Producer** - pins `net_metrics`, `time_stamp_events` |
 
 **Manifests**: `core/src/testing/agent.yaml`, `core/src/testing/identity.yaml`, `core/src/testing/metrics.yaml`
