@@ -17,7 +17,6 @@ pub enum Semantic {
     CpuIdleState,
     SslReadBytes,
     SslWriteBytes,
-    IdentityConnectionsTotal,
 }
 
 impl Semantic {
@@ -39,7 +38,6 @@ impl Semantic {
             Semantic::CpuIdleState => "cpu_idle_state",
             Semantic::SslReadBytes => "ssl_read_bytes",
             Semantic::SslWriteBytes => "ssl_write_bytes",
-            Semantic::IdentityConnectionsTotal => "cortexbrain_identity_connections_total",
         }
     }
     pub fn description(&self) -> &'static str {
@@ -74,9 +72,6 @@ impl Semantic {
             }
             Semantic::SslReadBytes => "Total bytes requested by the ssl_read function",
             Semantic::SslWriteBytes => "Total bytes requested by the ssl_write function",
-            Semantic::IdentityConnectionsTotal => {
-                "Total number of unique connections detected by the identity service, partitioned by direction"
-            }
         }
     }
 }

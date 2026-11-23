@@ -11,7 +11,6 @@ pub mod logger;
 pub mod map_handlers;
 #[cfg(feature = "monitoring-structs")]
 pub mod otel_metrics;
-pub mod otel_init;
 #[cfg(feature = "program-handlers")]
 pub mod program_handlers;
 pub mod semantic;

@@ -28,7 +28,6 @@ use aya_ebpf::{
     programs::{ProbeContext, TcContext},
 };
 
-use crate::data_structures::{DIRECTION_EGRESS, DIRECTION_INGRESS};
 use crate::tc::try_identity_classifier;
 use crate::tcp_analyzer::try_tcp_analyzer;
 use crate::veth_tracer::try_veth_tracer;
@@ -108,7 +107,7 @@ pub fn identity_classifier(ctx: TcContext) -> i32 {
 
 #[kprobe]
 pub fn tcp_message_tracer_connect(ctx: ProbeContext) -> u32 {
-    match try_tcp_analyzer(ctx, DIRECTION_EGRESS) {
+    match try_tcp_analyzer(ctx) {
         Ok(ret_val) => ret_val,
         Err(ret_val) => ret_val.try_into().unwrap_or(1),
     }
@@ -116,7 +115,7 @@ pub fn tcp_message_tracer_connect(ctx: ProbeContext) -> u32 {
 
 #[kprobe]
 pub fn tcp_message_tracer_rcv(ctx: ProbeContext) -> u32 {
-    match try_tcp_analyzer(ctx, DIRECTION_INGRESS) {
+    match try_tcp_analyzer(ctx) {
         Ok(ret_val) => ret_val,
         Err(ret_val) => ret_val.try_into().unwrap_or(1),
     }
